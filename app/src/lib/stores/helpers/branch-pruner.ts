@@ -6,6 +6,8 @@ import { getMergedBranches, deleteBranch } from '../../git'
 import { fatalError } from '../../fatal-error'
 import { RepositoryStateCache } from '../repository-state-cache'
 import * as moment from 'moment'
+import { IErrorMetadata } from '../../error-with-metadata'
+import { createFailableOperationHandler } from '../error-handling'
 
 /** Check if a repo needs to be pruned at least every 4 hours */
 const BackgroundPruneMinimumInterval = 1000 * 60 * 60 * 4
@@ -29,8 +31,20 @@ export class BranchPruner {
     private readonly gitStoreCache: GitStoreCache,
     private readonly repositoriesStore: RepositoriesStore,
     private readonly repositoriesStateCache: RepositoryStateCache,
-    private readonly onPruneCompleted: (repository: Repository) => Promise<void>
+    private readonly onPruneCompleted: (
+      repository: Repository
+    ) => Promise<void>,
+    private readonly emitError: (error: Error) => void
   ) {}
+
+  private withErrorHandling<T>(
+    repository: Repository,
+    action: () => Promise<T>,
+    errorMetadata?: IErrorMetadata
+  ) {
+    const handler = createFailableOperationHandler(repository, this.emitError)
+    return handler(action, errorMetadata)
+  }
 
   public async start() {
     if (this.timer !== null) {
@@ -61,9 +75,8 @@ export class BranchPruner {
     repository: Repository,
     defaultBranch: Branch
   ): Promise<ReadonlyArray<string> | null> {
-    const gitStore = this.gitStoreCache.get(repository)
     return (
-      (await gitStore.performFailableOperation(() =>
+      (await this.withErrorHandling(repository, () =>
         getMergedBranches(repository, defaultBranch.name)
       )) || null
     )
@@ -141,9 +154,8 @@ export class BranchPruner {
       })' as base branch`
     )
 
-    const gitStore = this.gitStoreCache.get(this.repository)
     for (const branch of branchesReadyForPruning) {
-      await gitStore.performFailableOperation(() =>
+      await this.withErrorHandling(this.repository, () =>
         deleteBranch(this.repository, branch!, null, false)
       )
     }
